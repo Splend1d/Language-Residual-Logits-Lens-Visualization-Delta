@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Logits/Residual Lens Viewer</title>
+  <style>
+    :root { --gap: 10px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 16px; overflow-x: auto; }
+    h1 { margin: 0 0 12px; font-size: 20px; }
+
+    .toolbar { display: flex; flex-direction: column; align-items: flex-start; gap: var(--gap); margin-bottom: 12px; }
+
+    .group { border: 1px solid #ddd; border-radius: 10px; padding: 10px; background: #fafafa; }
+    .group h3 { font-size: 14px; margin: 0 0 8px; }
+
+    /* Static-width selector boxes (no dynamic flex sizing) */
+    .selector { width: 560px; }
+
+    /* Grids with fixed column counts for stable layout */
+    .btns { display: grid; gap: 6px; max-height: 180px; overflow: auto; }
+    .btnsHundreds { grid-template-columns: repeat(10, 1fr); }
+    .btnsDigits   { grid-template-columns: repeat(10, 1fr); }
+
+    button { padding: 6px 10px; border-radius: 8px; border: 1px solid #bbb; background: #fff; cursor: pointer; font-weight: 600; }
+    button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; }
+    .imgWrap { position: relative; display: block; background: #f6f7f9; border-radius: 8px; overflow: auto; padding: 8px; }
+    img { display: block; height: auto; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .flex { display: flex; gap: 8px; align-items: center; }
+    .spacer { flex: 1 1 auto; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px; padding: 2px 6px; font-size: 12px; }
+    .footer { margin-top: 12px; }
+    .stickyBar { position: sticky; top: 0; background: rgba(255,255,255,0.85); backdrop-filter: blur(4px); border-bottom: 1px solid #eee; padding-bottom: 8px; z-index: 10; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    .input { width: 100px; padding: 6px 8px; border: 1px solid #bbb; border-radius: 8px; }
+    .tabs { display: flex; border-bottom: 1px solid #ddd; margin-bottom: 8px; flex-wrap: wrap; }
+    .tab { padding: 8px 12px; cursor: pointer; border: 1px solid #ddd; border-bottom: none; background: #f3f4f6; margin-right: 4px; border-top-left-radius: 6px; border-top-right-radius: 6px; user-select: none; }
+    .tab.active { background: #fff; font-weight: bold; }
+    .tabContent { display: none; }
+    .tabContent.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="stickyBar">
+    <h1>Language Residual / Logits Lens — PNG Viewer</h1>
+    <div class="controls">
+      <div class="flex">
+        <label for="hundreds" class="muted">Hundreds</label>
+        <input id="hundreds" class="input" type="number" step="100" min="0" value="0" />
+      </div>
+      <div class="flex">
+        <label for="mod" class="muted">ID % 100</label>
+        <input id="mod" class="input" type="number" min="0" max="99" value="0" />
+      </div>
+      <button id="prev">◀ Prev</button>
+      <button id="next">Next ▶</button>
+      <div class="spacer"></div>
+      <div class="muted">Current ID: <span id="curId" class="kbd">0</span></div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="group selector">
+      <h3>Pick the HUNDREDS (0, 100, …, 900)</h3>
+      <div id="hundredsBtns" class="btns btnsHundreds"></div>
+    </div>
+
+    <div class="group selector">
+      <h3>Pick ID % 100 (0…99)</h3>
+      <div id="modBtns" class="btns btnsDigits"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="tabs" class="tabs"></div>
+    <div id="contentContainer"></div>
+  </div>
+
+  <script>
+    const OWNER = 'Splend1d';
+    const REPO  = 'Language-Residual-Logits-Lens-Visualization';
+    const BRANCH = 'main';
+
+    const DATASETS = [
+      { key: 'cos12',  label: 'cos/12',  path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/cos/12' },
+      { key: 'cos23',  label: 'cos/23',  path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/cos/23' },
+      { key: 'cos13',  label: 'cos/13',  path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/cos/13' },
+      { key: 'prob12', label: 'prob/12', path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/prob/12' },
+      { key: 'prob23', label: 'prob/23', path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/prob/23' },
+      { key: 'prob13', label: 'prob/13', path: 'assets/logit-lens-topk/Phi4-Multimodal/gigaspeech/prob/13' },
+    ];
+
+    let hundreds = 0;
+    let mod = 0;
+    let activeKey = DATASETS[0].key;
+
+    const listsMap = Object.fromEntries(DATASETS.map(d => [d.key, []]));
+
+    const elHundredsBtns = document.getElementById('hundredsBtns');
+    const elModBtns = document.getElementById('modBtns');
+    const elCurId = document.getElementById('curId');
+    const inputHundreds = document.getElementById('hundreds');
+    const inputMod = document.getElementById('mod');
+    const btnPrev = document.getElementById('prev');
+    const btnNext = document.getElementById('next');
+
+    const tabsEl = document.getElementById('tabs');
+    const contentContainer = document.getElementById('contentContainer');
+
+    const currentId = () => hundreds + mod;
+    const GH_API_LIST = (path) => `https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(BRANCH)}`;
+
+    function setActive(container, idx) {
+      [...container.querySelectorAll('button')].forEach(b => b.classList.remove('active'));
+      const btn = container.querySelector(`[data-idx="${idx}"]`);
+      if (btn) btn.classList.add('active');
+    }
+
+    function setIdFromHashIfAny() {
+      const h = window.location.hash.replace('#', '').trim();
+      if (!h) return;
+      const n = Number(h);
+      if (!Number.isFinite(n) || n < 0) return;
+      hundreds = Math.floor(n / 100) * 100;
+      mod = n % 100;
+      inputHundreds.value = hundreds;
+      inputMod.value = mod;
+      setActive(elHundredsBtns, hundreds);
+      setActive(elModBtns, mod);
+    }
+
+    function findById(files, id) {
+      const re = new RegExp(`^${id}[_-].*\\.png$`, 'i');
+      return files.find(f => re.test(f)) || null;
+    }
+
+    function updateImages() {
+      const id = currentId();
+      elCurId.textContent = id;
+      window.location.hash = String(id);
+
+      for (const d of DATASETS) {
+        const img = document.getElementById(`img-${d.key}`);
+        const list = listsMap[d.key];
+        const fname = findById(list, id);
+        if (fname) {
+          const src = `${d.path}/${fname}`;
+          img.src = src;
+          img.alt = src;
+        } else {
+          img.removeAttribute('src');
+          img.alt = `Not found in ${d.label} for id ${id}`;
+        }
+      }
+    }
+
+    function buildButtons() {
+      // Hundreds: 0..900
+      const fragH = document.createDocumentFragment();
+      for (let i = 0; i < 10; i++) {
+        const base = i * 100;
+        const btn = document.createElement('button');
+        btn.textContent = String(base);
+        btn.dataset.idx = String(base);
+        btn.addEventListener('click', () => {
+          hundreds = base;
+          inputHundreds.value = hundreds;
+          setActive(elHundredsBtns, base);
+          updateImages();
+        });
+        fragH.appendChild(btn);
+      }
+      elHundredsBtns.appendChild(fragH);
+
+      // Mod: 0..99
+      const fragM = document.createDocumentFragment();
+      for (let j = 0; j < 100; j++) {
+        const btn = document.createElement('button');
+        btn.textContent = String(j);
+        btn.dataset.idx = String(j);
+        btn.addEventListener('click', () => {
+          mod = j;
+          inputMod.value = mod;
+          setActive(elModBtns, j);
+          updateImages();
+        });
+        fragM.appendChild(btn);
+      }
+      elModBtns.appendChild(fragM);
+    }
+
+    function buildTabs() {
+      const tabsFrag = document.createDocumentFragment();
+      const contFrag  = document.createDocumentFragment();
+
+      DATASETS.forEach((d, idx) => {
+        // Tab button
+        const tab = document.createElement('div');
+        tab.className = 'tab' + (idx === 0 ? ' active' : '');
+        tab.id = `tab-${d.key}`;
+        tab.textContent = d.label;
+        tab.addEventListener('click', () => selectTab(d.key));
+        tabsFrag.appendChild(tab);
+
+        // Content panel
+        const content = document.createElement('div');
+        content.className = 'tabContent' + (idx === 0 ? ' active' : '');
+        content.id = `content-${d.key}`;
+        content.innerHTML = `
+          <div class="imgWrap"><img id="img-${d.key}" alt="${d.label} image" /></div>
+          <div class="muted footer">From <span class="kbd">${d.path}/&lt;id&gt;.png</span></div>
+        `;
+        contFrag.appendChild(content);
+      });
+
+      tabsEl.appendChild(tabsFrag);
+      contentContainer.appendChild(contFrag);
+    }
+
+    function selectTab(key) {
+      activeKey = key;
+      DATASETS.forEach(d => {
+        const tab = document.getElementById(`tab-${d.key}`);
+        const content = document.getElementById(`content-${d.key}`);
+        if (d.key === key) {
+          tab.classList.add('active');
+          content.classList.add('active');
+        } else {
+          tab.classList.remove('active');
+          content.classList.remove('active');
+        }
+      });
+    }
+
+    function wireInputs() {
+      inputHundreds.addEventListener('change', () => {
+        const v = Math.max(0, Math.floor(Number(inputHundreds.value) / 100) * 100);
+        hundreds = Number.isFinite(v) ? v : 0;
+        if (hundreds > 900) hundreds = 900;
+        inputHundreds.value = hundreds;
+        setActive(elHundredsBtns, hundreds);
+        updateImages();
+      });
+      inputMod.addEventListener('change', () => {
+        let v = Math.floor(Number(inputMod.value));
+        if (!Number.isFinite(v)) v = 0; v = Math.max(0, Math.min(99, v));
+        mod = v;
+        inputMod.value = mod;
+        setActive(elModBtns, mod);
+        updateImages();
+      });
+      btnPrev.addEventListener('click', () => {
+        let id = currentId();
+        if (id > 0) id -= 1;
+        hundreds = Math.floor(id / 100) * 100; mod = id % 100;
+        inputHundreds.value = hundreds; inputMod.value = mod;
+        setActive(elHundredsBtns, hundreds); setActive(elModBtns, mod);
+        updateImages();
+      });
+      btnNext.addEventListener('click', () => {
+        let id = currentId() + 1;
+        if (id > 999) id = 999;
+        hundreds = Math.floor(id / 100) * 100; mod = id % 100;
+        inputHundreds.value = hundreds; inputMod.value = mod;
+        setActive(elHundredsBtns, hundreds); setActive(elModBtns, mod);
+        updateImages();
+      });
+
+      // Optional: keyboard navigation ← →
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft') btnPrev.click();
+        if (e.key === 'ArrowRight') btnNext.click();
+      });
+    }
+
+    async function fetchDir(path) {
+      const url = GH_API_LIST(path);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to list ${path}: ${res.status}`);
+      const data = await res.json();
+      return data.filter(x => x.type === 'file' && /\.png$/i.test(x.name)).map(x => x.name);
+    }
+
+    async function init() {
+      buildButtons();
+      buildTabs();
+      setIdFromHashIfAny();
+      setActive(elHundredsBtns, hundreds);
+      setActive(elModBtns, mod);
+      wireInputs();
+
+      try {
+        const lists = await Promise.all(DATASETS.map(d => fetchDir(d.path)));
+        DATASETS.forEach((d, i) => { listsMap[d.key] = lists[i]; });
+      } catch (e) {
+        console.error(e);
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.textContent = 'Note: Could not list directories via GitHub API (rate limit or private repo). Images will still load if paths exist locally.';
+        document.body.prepend(note);
+      }
+
+      updateImages();
+    }
+
+    init();
+  </script>
+</body>
+</html>
+
